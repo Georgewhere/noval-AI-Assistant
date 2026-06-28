@@ -1,0 +1,1440 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>本地AI小说助手 - 完整源代码文档</title>
+<style>
+body { font-family: "Microsoft YaHei", sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; }
+h1 { color: #333; border-bottom: 2px solid #007acc; padding-bottom: 10px; }
+h2 { color: #007acc; margin-top: 30px; }
+h3 { color: #555; }
+.file-path { background: #f5f5f5; padding: 5px 10px; border-radius: 4px; font-family: monospace; }
+pre { background: #1e1e1e; color: #d4d4d4; padding: 15px; border-radius: 8px; overflow-x: auto; font-size: 13px; line-height: 1.5; }
+code { font-family: "Consolas", "Courier New", monospace; }
+.toc { background: #f9f9f9; padding: 20px; border-radius: 8px; margin: 20px 0; }
+.toc ul { list-style: none; padding-left: 0; }
+.toc li { margin: 5px 0; }
+.toc a { color: #007acc; text-decoration: none; }
+.toc a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+
+<h1>本地 AI 小说聊天助手 - 完整源代码文档</h1>
+
+<div class="toc">
+<h2>目录</h2>
+<ul>
+<li><a href="#overview">1. 项目概述</a></li>
+<li><a href="#architecture">2. 技术架构</a></li>
+<li><a href="#frontend">3. 前端代码</a>
+<ul>
+<li><a href="#ai-service">3.1 AI 服务 (aiService.ts)</a></li>
+<li><a href="#database">3.2 数据库服务 (database.ts)</a></li>
+<li><a href="#text-processor">3.3 文本处理 (textProcessor.ts)</a></li>
+<li><a href="#types">3.4 类型定义 (types/index.ts)</a></li>
+<li><a href="#chat-screen">3.5 聊天页面 (chat/index.tsx)</a></li>
+<li><a href="#library-screen">3.6 知识库页面 (library/index.tsx)</a></li>
+<li><a href="#character-screen">3.7 角色设定页面 (character/index.tsx)</a></li>
+</ul>
+</li>
+<li><a href="#backend">4. 后端代码</a>
+<ul>
+<li><a href="#server">4.1 服务端入口 (server/src/index.js)</a></li>
+</ul>
+</li>
+<li><a href="#config">5. 配置文件</a></li>
+<li><a href="#deploy">6. 部署说明</a></li>
+</ul>
+</div>
+
+<h2 id="overview">1. 项目概述</h2>
+<p><strong>项目名称：</strong>本地 AI 小说聊天助手</p>
+<p><strong>核心功能：</strong></p>
+<ul>
+<li>上传小说文本到本地知识库</li>
+<li>AI 基于小说内容进行对话</li>
+<li>支持角色扮演（预设+自定义）</li>
+<li>数据完全本地存储，保护隐私</li>
+<li>手机浏览器访问，随时随地使用</li>
+</ul>
+
+<h2 id="architecture">2. 技术架构</h2>
+<p><strong>前端：</strong>React Native + Expo (Web)</p>
+<p><strong>后端：</strong>Express.js + Node.js</p>
+<p><strong>AI 模型：</strong>Ollama + Qwen2.5:3b</p>
+<p><strong>内网穿透：</strong>ngrok</p>
+<p><strong>部署：</strong>GitHub Pages (前端) + 本地电脑 (后端)</p>
+
+<hr>
+
+<h2 id="frontend">3. 前端代码</h2>
+
+<h3 id="ai-service">3.1 AI 服务 (aiService.ts)</h3>
+<p class="file-path">client/services/aiService.ts</p>
+<pre><code>import { searchRelevantChunks } from './textProcessor';
+
+// 服务端地址配置
+const DEFAULT_SERVER_URL = 'http://localhost:3001';
+
+export const getServerUrl = (): string => {
+  if (typeof window !== 'undefined') {
+    return localStorage.getItem('serverUrl') || DEFAULT_SERVER_URL;
+  }
+  return DEFAULT_SERVER_URL;
+};
+
+export const setServerUrl = (url: string): void => {
+  if (typeof window !== 'undefined') {
+    localStorage.setItem('serverUrl', url);
+  }
+};
+
+// 检查服务端是否可用
+export const checkServerHealth = async (): Promise<boolean> => {
+  try {
+    const serverUrl = getServerUrl();
+    const response = await fetch(`${serverUrl}/api/health`, {
+      method: 'GET',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    return response.ok;
+  } catch (error) {
+    console.error('Health check failed:', error);
+    return false;
+  }
+};
+
+// 获取可用模型列表
+export const getAvailableModels = async (): Promise<string[]> => {
+  try {
+    const serverUrl = getServerUrl();
+    const response = await fetch(`${serverUrl}/api/models`);
+    const data = await response.json();
+    return data.models?.map((m: { name: string }) => m.name) || ['qwen2.5:3b'];
+  } catch (error) {
+    console.error('Failed to get models:', error);
+    return ['qwen2.5:3b'];
+  }
+};
+
+// 流式聊天
+export const streamChat = async (
+  message: string,
+  systemPrompt?: string,
+  model?: string,
+  onChunk?: (chunk: string) => void
+): Promise<string> => {
+  const serverUrl = getServerUrl();
+  
+  const response = await fetch(`${serverUrl}/api/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message, systemPrompt, model: model || 'qwen2.5:3b' }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`HTTP error! status: ${response.status}`);
+  }
+
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error('No reader available');
+
+  const decoder = new TextDecoder();
+  let fullContent = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    const text = decoder.decode(value);
+    const lines = text.split('\n');
+
+    for (const line of lines) {
+      if (line.startsWith('data: ')) {
+        try {
+          const data = JSON.parse(line.slice(6));
+          if (data.content) {
+            fullContent += data.content;
+            onChunk?.(data.content);
+          }
+          if (data.done) {
+            return fullContent;
+          }
+        } catch (e) {
+          // Ignore parse errors
+        }
+      }
+    }
+  }
+
+  return fullContent;
+};
+
+// 带知识库的聊天
+export const chatWithKnowledge = async (
+  message: string,
+  knowledgeBase: Array<{ id: string; title: string; chunks: Array<{ content: string; keywords: string[] }> }>,
+  systemPrompt?: string,
+  model?: string,
+  onChunk?: (chunk: string) => void
+): Promise<string> => {
+  // 搜索相关段落
+  const relevantChunks = searchRelevantChunks(message, knowledgeBase, 3);
+  
+  let contextPrompt = '';
+  if (relevantChunks.length > 0) {
+    contextPrompt = '\n\n以下是相关的小说内容，请参考这些内容进行回复：\n\n';
+    for (const chunk of relevantChunks) {
+      contextPrompt += `【${chunk.novelTitle}】\n${chunk.content}\n\n`;
+    }
+  }
+
+  const fullMessage = message + contextPrompt;
+  return streamChat(fullMessage, systemPrompt, model, onChunk);
+};
+</code></pre>
+
+<h3 id="database">3.2 数据库服务 (database.ts)</h3>
+<p class="file-path">client/services/database.ts</p>
+<pre><code>import { openDB, DBSchema, IDBPDatabase } from 'idb';
+import { Novel, Character, ChatMessage } from '../types';
+
+interface NovelAIDB extends DBSchema {
+  novels: {
+    key: string;
+    value: Novel;
+    indexes: { 'by-created': number };
+  };
+  characters: {
+    key: string;
+    value: Character;
+    indexes: { 'by-created': number };
+  };
+  chats: {
+    key: string;
+    value: ChatMessage;
+    indexes: { 'by-character': string; 'by-timestamp': number };
+  };
+}
+
+let db: IDBPDatabase<NovelAIDB> | null = null;
+
+export const initDB = async (): Promise<void> => {
+  if (typeof window === 'undefined') return;
+  
+  db = await openDB<NovelAIDB>('novel-ai-db', 1, {
+    upgrade(database) {
+      // 小说库
+      if (!database.objectStoreNames.contains('novels')) {
+        const novelStore = database.createObjectStore('novels', { keyPath: 'id' });
+        novelStore.createIndex('by-created', 'createdAt');
+      }
+      
+      // 角色库
+      if (!database.objectStoreNames.contains('characters')) {
+        const charStore = database.createObjectStore('characters', { keyPath: 'id' });
+        charStore.createIndex('by-created', 'createdAt');
+      }
+      
+      // 聊天记录库
+      if (!database.objectStoreNames.contains('chats')) {
+        const chatStore = database.createObjectStore('chats', { keyPath: 'id' });
+        chatStore.createIndex('by-character', 'characterId');
+        chatStore.createIndex('by-timestamp', 'timestamp');
+      }
+    },
+  });
+};
+
+// ========== 小说操作 ==========
+
+export const saveNovel = async (novel: Novel): Promise<void> => {
+  if (!db) throw new Error('Database not initialized');
+  await db.put('novels', novel);
+};
+
+export const getNovel = async (id: string): Promise<Novel | undefined> => {
+  if (!db) throw new Error('Database not initialized');
+  return db.get('novels', id);
+};
+
+export const getAllNovels = async (): Promise<Novel[]> => {
+  if (!db) throw new Error('Database not initialized');
+  return db.getAll('novels');
+};
+
+export const deleteNovel = async (id: string): Promise<void> => {
+  if (!db) throw new Error('Database not initialized');
+  await db.delete('novels', id);
+};
+
+// ========== 角色操作 ==========
+
+export const saveCharacter = async (character: Character): Promise<void> => {
+  if (!db) throw new Error('Database not initialized');
+  await db.put('characters', character);
+};
+
+export const getCharacter = async (id: string): Promise<Character | undefined> => {
+  if (!db) throw new Error('Database not initialized');
+  return db.get('characters', id);
+};
+
+export const getAllCharacters = async (): Promise<Character[]> => {
+  if (!db) throw new Error('Database not initialized');
+  return db.getAll('characters');
+};
+
+export const deleteCharacter = async (id: string): Promise<void> => {
+  if (!db) throw new Error('Database not initialized');
+  await db.delete('characters', id);
+};
+
+// ========== 聊天记录操作 ==========
+
+export const saveChatMessage = async (message: ChatMessage): Promise<void> => {
+  if (!db) throw new Error('Database not initialized');
+  await db.put('chats', message);
+};
+
+export const getChatHistory = async (characterId: string): Promise<ChatMessage[]> => {
+  if (!db) throw new Error('Database not initialized');
+  const messages = await db.getAllFromIndex('chats', 'by-character', characterId);
+  return messages.sort((a, b) => a.timestamp - b.timestamp);
+};
+
+export const clearChatHistory = async (characterId: string): Promise<void> => {
+  if (!db) throw new Error('Database not initialized');
+  const messages = await db.getAllFromIndex('chats', 'by-character', characterId);
+  for (const msg of messages) {
+    await db.delete('chats', msg.id);
+  }
+};
+
+// ========== 初始化默认角色 ==========
+
+export const initDefaultCharacters = async (): Promise<void> => {
+  const existing = await getAllCharacters();
+  if (existing.length > 0) return;
+
+  const defaultCharacters: Character[] = [
+    {
+      id: 'default-classical',
+      name: '古风文人',
+      description: '温文尔雅，用词古典',
+      systemPrompt: '你是一位古风文人，说话温文尔雅，用词古典优雅。请用文言文的风格回答问题，适当引用诗词典故。',
+      createdAt: Date.now(),
+    },
+    {
+      id: 'default-martial',
+      name: '武侠高手',
+      description: '豪放不羁，江湖气重',
+      systemPrompt: '你是一位江湖侠客，说话豪放不羁，充满江湖气息。请用武侠风格回答问题，可以提及江湖规矩、武林往事。',
+      createdAt: Date.now(),
+    },
+    {
+      id: 'default-modern',
+      name: '现代作家',
+      description: '通俗易懂，贴近生活',
+      systemPrompt: '你是一位现代作家，说话通俗易懂，贴近生活。请用现代白话文风格回答问题，语言生动有趣。',
+      createdAt: Date.now(),
+    },
+    {
+      id: 'default-assistant',
+      name: '智能助手',
+      description: '理性客观，逻辑清晰',
+      systemPrompt: '你是一位智能助手，说话理性客观，逻辑清晰。请用专业、准确的语言回答问题。',
+      createdAt: Date.now(),
+    },
+  ];
+
+  for (const char of defaultCharacters) {
+    await saveCharacter(char);
+  }
+};
+</code></pre>
+
+<h3 id="text-processor">3.3 文本处理 (textProcessor.ts)</h3>
+<p class="file-path">client/services/textProcessor.ts</p>
+<pre><code>import { Novel, NovelChunk } from '../types';
+
+// 中文分词（简化版）
+const chineseStopWords = new Set([
+  '的', '了', '在', '是', '我', '有', '和', '就', '不', '人', '都', '一', '一个',
+  '上', '也', '很', '到', '说', '要', '去', '你', '会', '着', '没有', '看', '好',
+  '自己', '这', '他', '她', '它', '们', '那', '些', '什么', '怎么', '为什么',
+  '吗', '呢', '吧', '啊', '呀', '哦', '嗯', '哈', '嘿', '唉', '哎',
+  '但', '而', '或', '如果', '因为', '所以', '虽然', '但是', '而且', '并且',
+  '可以', '可能', '应该', '必须', '需要', '能够', '已经', '正在', '将要',
+]);
+
+// 提取关键词
+export const extractKeywords = (text: string, maxKeywords: number = 20): string[] => {
+  // 简单的中文分词
+  const words: string[] = [];
+  let currentWord = '';
+  
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    const code = char.charCodeAt(0);
+    
+    // 中文字符范围
+    if (code >= 0x4e00 && code <= 0x9fff) {
+      currentWord += char;
+      // 每2-4个字作为一个词
+      if (currentWord.length >= 2 && currentWord.length <= 4) {
+        if (Math.random() > 0.5 || i === text.length - 1) {
+          words.push(currentWord);
+          currentWord = '';
+        }
+      }
+    } else {
+      if (currentWord.length >= 2) {
+        words.push(currentWord);
+      }
+      currentWord = '';
+    }
+  }
+  
+  if (currentWord.length >= 2) {
+    words.push(currentWord);
+  }
+  
+  // 统计词频
+  const wordCount: Record<string, number> = {};
+  for (const word of words) {
+    if (!chineseStopWords.has(word) && word.length >= 2) {
+      wordCount[word] = (wordCount[word] || 0) + 1;
+    }
+  }
+  
+  // 按词频排序，取前N个
+  return Object.entries(wordCount)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, maxKeywords)
+    .map(([word]) => word);
+};
+
+// 文本分块
+export const splitIntoChunks = (text: string, chunkSize: number = 500): string[] => {
+  const chunks: string[] = [];
+  
+  // 按段落分割
+  const paragraphs = text.split(/\n\s*\n/);
+  let currentChunk = '';
+  
+  for (const para of paragraphs) {
+    const trimmed = para.trim();
+    if (!trimmed) continue;
+    
+    if (currentChunk.length + trimmed.length > chunkSize) {
+      if (currentChunk) {
+        chunks.push(currentChunk.trim());
+      }
+      // 如果单个段落超过chunkSize，需要进一步分割
+      if (trimmed.length > chunkSize) {
+        const sentences = trimmed.split(/([。！？])/);
+        let subChunk = '';
+        for (let i = 0; i < sentences.length; i++) {
+          if (subChunk.length + sentences[i].length > chunkSize) {
+            if (subChunk) chunks.push(subChunk.trim());
+            subChunk = sentences[i];
+          } else {
+            subChunk += sentences[i];
+          }
+        }
+        if (subChunk) currentChunk = subChunk;
+        else currentChunk = '';
+      } else {
+        currentChunk = trimmed;
+      }
+    } else {
+      currentChunk += (currentChunk ? '\n\n' : '') + trimmed;
+    }
+  }
+  
+  if (currentChunk) {
+    chunks.push(currentChunk.trim());
+  }
+  
+  return chunks;
+};
+
+// 处理小说文本
+export const processNovelText = (text: string, novelId: string, novelTitle: string): NovelChunk[] => {
+  const textChunks = splitIntoChunks(text);
+  
+  return textChunks.map((content, index) => ({
+    id: `${novelId}-chunk-${index}`,
+    novelId,
+    novelTitle,
+    content,
+    keywords: extractKeywords(content),
+    index,
+  }));
+};
+
+// 搜索相关段落
+export const searchRelevantChunks = (
+  query: string,
+  novels: Novel[],
+  maxResults: number = 3
+): Array<NovelChunk & { score: number }> => {
+  const queryKeywords = extractKeywords(query, 10);
+  
+  const results: Array<NovelChunk & { score: number }> = [];
+  
+  for (const novel of novels) {
+    for (const chunk of novel.chunks) {
+      let score = 0;
+      
+      // 计算关键词匹配分数
+      for (const queryKw of queryKeywords) {
+        // 完全匹配
+        if (chunk.keywords.includes(queryKw)) {
+          score += 2;
+        }
+        // 部分匹配
+        for (const chunkKw of chunk.keywords) {
+          if (queryKw.includes(chunkKw) || chunkKw.includes(queryKw)) {
+            score += 1;
+            break;
+          }
+        }
+        // 内容匹配
+        if (chunk.content.includes(queryKw)) {
+          score += 1;
+        }
+      }
+      
+      if (score > 0) {
+        results.push({ ...chunk, score });
+      }
+    }
+  }
+  
+  // 按分数排序，取前N个
+  return results
+    .sort((a, b) => b.score - a.score)
+    .slice(0, maxResults);
+};
+</code></pre>
+
+<h3 id="types">3.4 类型定义 (types/index.ts)</h3>
+<p class="file-path">client/types/index.ts</p>
+<pre><code>// 小说数据块
+export interface NovelChunk {
+  id: string;
+  novelId: string;
+  novelTitle: string;
+  content: string;
+  keywords: string[];
+  index: number;
+}
+
+// 小说
+export interface Novel {
+  id: string;
+  title: string;
+  content: string;
+  chunks: NovelChunk[];
+  createdAt: number;
+}
+
+// 角色
+export interface Character {
+  id: string;
+  name: string;
+  description: string;
+  systemPrompt: string;
+  createdAt: number;
+}
+
+// 聊天消息
+export interface ChatMessage {
+  id: string;
+  characterId: string;
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp: number;
+}
+</code></pre>
+
+<h3 id="chat-screen">3.5 聊天页面 (chat/index.tsx)</h3>
+<p class="file-path">client/screens/chat/index.tsx</p>
+<pre><code>import React, { useState, useEffect, useCallback, useRef } from 'react';
+import {
+  View,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  FlatList,
+  ActivityIndicator,
+  Modal,
+  ScrollView,
+  Linking,
+  Platform,
+  KeyboardAvoidingView,
+} from 'react-native';
+import { Screen } from '@/components/Screen';
+import { FontAwesome6 } from '@expo/vector-icons';
+import {
+  getAllCharacters,
+  getAllNovels,
+  getChatHistory,
+  saveChatMessage,
+  clearChatHistory,
+  initDefaultCharacters,
+} from '@/services/database';
+import { streamChat, chatWithKnowledge, checkServerHealth, getServerUrl, setServerUrl } from '@/services/aiService';
+import { Character, Novel, ChatMessage } from '@/types';
+
+export default function ChatScreen() {
+  const [characters, setCharacters] = useState<Character[]>([]);
+  const [novels, setNovels] = useState<Novel[]>([]);
+  const [selectedCharacter, setSelectedCharacter] = useState<Character | null>(null);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [inputText, setInputText] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+  const [isInitializing, setIsInitializing] = useState(true);
+  const [initError, setInitError] = useState<string | null>(null);
+  const [showCharPicker, setShowCharPicker] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [serverUrl, setServerUrlState] = useState(getServerUrl());
+  const [serverStatus, setServerStatus] = useState<'checking' | 'connected' | 'disconnected'>('checking');
+  
+  const flatListRef = useRef<FlatList>(null);
+
+  // 加载数据
+  const loadData = useCallback(async () => {
+    try {
+      await initDefaultCharacters();
+      const chars = await getAllCharacters();
+      const novelsList = await getAllNovels();
+      setCharacters(chars);
+      setNovels(novelsList);
+      
+      if (chars.length > 0 && !selectedCharacter) {
+        setSelectedCharacter(chars[0]);
+      }
+    } catch (error) {
+      console.error('Failed to load data:', error);
+    }
+  }, [selectedCharacter]);
+
+  // 检查服务端状态
+  const checkServer = useCallback(async () => {
+    setServerStatus('checking');
+    const isHealthy = await checkServerHealth();
+    setServerStatus(isHealthy ? 'connected' : 'disconnected');
+    return isHealthy;
+  }, []);
+
+  // 初始化
+  useEffect(() => {
+    const init = async () => {
+      try {
+        setIsInitializing(true);
+        setInitError(null);
+        
+        const isHealthy = await checkServer();
+        if (!isHealthy) {
+          setInitError('无法连接到服务端，请确保服务端已启动');
+          setIsInitializing(false);
+          return;
+        }
+        
+        await loadData();
+        setIsInitializing(false);
+      } catch (error) {
+        setInitError('初始化失败，请检查服务端连接');
+        setIsInitializing(false);
+      }
+    };
+    init();
+  }, [checkServer, loadData]);
+
+  // 加载聊天记录
+  useEffect(() => {
+    if (selectedCharacter) {
+      getChatHistory(selectedCharacter.id).then(setMessages);
+    }
+  }, [selectedCharacter]);
+
+  // 发送消息
+  const handleSend = async () => {
+    if (!inputText.trim() || !selectedCharacter || isLoading) return;
+    
+    const userMessage: ChatMessage = {
+      id: `msg-${Date.now()}`,
+      characterId: selectedCharacter.id,
+      role: 'user',
+      content: inputText.trim(),
+      timestamp: Date.now(),
+    };
+    
+    setMessages(prev => [...prev, userMessage]);
+    await saveChatMessage(userMessage);
+    setInputText('');
+    setIsLoading(true);
+    
+    try {
+      let fullResponse = '';
+      
+      if (novels.length > 0) {
+        fullResponse = await chatWithKnowledge(
+          userMessage.content,
+          novels,
+          selectedCharacter.systemPrompt,
+          undefined,
+          (chunk) => {
+            // 实时更新消息（这里简化处理）
+          }
+        );
+      } else {
+        fullResponse = await streamChat(
+          userMessage.content,
+          selectedCharacter.systemPrompt,
+          undefined,
+          (chunk) => {}
+        );
+      }
+      
+      const assistantMessage: ChatMessage = {
+        id: `msg-${Date.now()}-ai`,
+        characterId: selectedCharacter.id,
+        role: 'assistant',
+        content: fullResponse,
+        timestamp: Date.now(),
+      };
+      
+      setMessages(prev => [...prev, assistantMessage]);
+      await saveChatMessage(assistantMessage);
+    } catch (error) {
+      console.error('Chat error:', error);
+      const errorMessage: ChatMessage = {
+        id: `msg-${Date.now()}-error`,
+        characterId: selectedCharacter.id,
+        role: 'assistant',
+        content: '抱歉，发生了错误，请重试。',
+        timestamp: Date.now(),
+      };
+      setMessages(prev => [...prev, errorMessage]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // 清空聊天记录
+  const handleClearChat = async () => {
+    if (!selectedCharacter) return;
+    await clearChatHistory(selectedCharacter.id);
+    setMessages([]);
+  };
+
+  // 打开浏览器
+  const openInBrowser = () => {
+    const url = 'https://georgewhere.github.io/noval-AI-Assistant/';
+    if (Platform.OS === 'web') {
+      window.open(url, '_blank');
+    } else {
+      Linking.openURL(url);
+    }
+  };
+
+  // 保存设置
+  const handleSaveSettings = () => {
+    setServerUrl(serverUrl);
+    setShowSettings(false);
+    checkServer();
+  };
+
+  // 渲染消息
+  const renderMessage = ({ item }: { item: ChatMessage }) => (
+    <View style={{
+      flexDirection: item.role === 'user' ? 'row-reverse' : 'row',
+      marginVertical: 8,
+      paddingHorizontal: 16,
+    }}>
+      <View style={{
+        maxWidth: '80%',
+        backgroundColor: item.role === 'user' ? '#007AFF' : '#E9E9EB',
+        borderRadius: 18,
+        paddingHorizontal: 14,
+        paddingVertical: 10,
+      }}>
+        <Text style={{
+          color: item.role === 'user' ? '#FFF' : '#000',
+          fontSize: 16,
+        }}>
+          {item.content}
+        </Text>
+      </View>
+    </View>
+  );
+
+  if (isInitializing) {
+    return (
+      <Screen>
+        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+          <ActivityIndicator size="large" color="#007AFF" />
+          <Text style={{ marginTop: 16, fontSize: 16, color: '#666' }}>正在初始化...</Text>
+        </View>
+      </Screen>
+    );
+  }
+
+  if (initError) {
+    return (
+      <Screen>
+        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 }}>
+          <FontAwesome6 name="triangle-exclamation" size={48} color="#FF3B30" />
+          <Text style={{ marginTop: 16, fontSize: 18, fontWeight: 'bold' }}>初始化失败</Text>
+          <Text style={{ marginTop: 8, fontSize: 14, color: '#666', textAlign: 'center' }}>
+            {initError}
+          </Text>
+          <TouchableOpacity
+            style={{ marginTop: 24, backgroundColor: '#007AFF', paddingHorizontal: 24, paddingVertical: 12, borderRadius: 8 }}
+            onPress={() => { setIsInitializing(true); setInitError(null); checkServer().then(h => { if (h) loadData(); setIsInitializing(false); }); }}
+          >
+            <Text style={{ color: '#FFF', fontSize: 16 }}>重试</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={{ marginTop: 12, backgroundColor: '#34C759', paddingHorizontal: 24, paddingVertical: 12, borderRadius: 8 }}
+            onPress={openInBrowser}
+          >
+            <Text style={{ color: '#FFF', fontSize: 16 }}>用华为浏览器打开</Text>
+          </TouchableOpacity>
+        </View>
+      </Screen>
+    );
+  }
+
+  return (
+    <Screen>
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        {/* 头部 */}
+        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 16, borderBottomWidth: 1, borderBottomColor: '#E5E5E5' }}>
+          <TouchableOpacity onPress={() => setShowCharPicker(true)} style={{ flexDirection: 'row', alignItems: 'center' }}>
+            <FontAwesome6 name="user-circle" size={24} color="#007AFF" />
+            <Text style={{ marginLeft: 8, fontSize: 16, fontWeight: '600' }}>
+              {selectedCharacter?.name || '选择角色'}
+            </Text>
+          </TouchableOpacity>
+          <View style={{ flexDirection: 'row' }}>
+            <View style={{
+              width: 8, height: 8, borderRadius: 4, marginRight: 8, marginTop: 8,
+              backgroundColor: serverStatus === 'connected' ? '#34C759' : '#FF3B30',
+            }} />
+            <TouchableOpacity onPress={() => setShowSettings(true)}>
+              <FontAwesome6 name="gear" size={20} color="#666" />
+            </TouchableOpacity>
+          </View>
+        </View>
+
+        {/* 消息列表 */}
+        <FlatList
+          ref={flatListRef}
+          data={messages}
+          renderItem={renderMessage}
+          keyExtractor={item => item.id}
+          onContentSizeChange={() => flatListRef.current?.scrollToEnd()}
+          ListEmptyComponent={
+            <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 40 }}>
+              <Text style={{ fontSize: 16, color: '#999' }}>开始和 {selectedCharacter?.name} 聊天吧！</Text>
+            </View>
+          }
+        />
+
+        {/* 输入区域 */}
+        <View style={{ flexDirection: 'row', padding: 12, borderTopWidth: 1, borderTopColor: '#E5E5E5' }}>
+          <TextInput
+            style={{ flex: 1, backgroundColor: '#F5F5F5', borderRadius: 20, paddingHorizontal: 16, paddingVertical: 10, fontSize: 16 }}
+            value={inputText}
+            onChangeText={setInputText}
+            placeholder="输入消息..."
+            multiline
+            maxLength={1000}
+          />
+          <TouchableOpacity
+            style={{ marginLeft: 8, width: 44, height: 44, borderRadius: 22, backgroundColor: '#007AFF', justifyContent: 'center', alignItems: 'center' }}
+            onPress={handleSend}
+            disabled={isLoading || !inputText.trim()}
+          >
+            {isLoading ? (
+              <ActivityIndicator color="#FFF" />
+            ) : (
+              <FontAwesome6 name="paper-plane" size={18} color="#FFF" />
+            )}
+          </TouchableOpacity>
+        </View>
+      </KeyboardAvoidingView>
+
+      {/* 角色选择弹窗 */}
+      <Modal visible={showCharPicker} transparent animationType="slide">
+        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' }}>
+          <View style={{ backgroundColor: '#FFF', borderTopLeftRadius: 20, borderTopRightRadius: 20, maxHeight: '60%' }}>
+            <View style={{ padding: 16, borderBottomWidth: 1, borderBottomColor: '#E5E5E5', flexDirection: 'row', justifyContent: 'space-between' }}>
+              <Text style={{ fontSize: 18, fontWeight: '600' }}>选择角色</Text>
+              <TouchableOpacity onPress={() => setShowCharPicker(false)}>
+                <FontAwesome6 name="xmark" size={20} color="#666" />
+              </TouchableOpacity>
+            </View>
+            <ScrollView>
+              {characters.map(char => (
+                <TouchableOpacity
+                  key={char.id}
+                  style={{ padding: 16, borderBottomWidth: 1, borderBottomColor: '#F0F0F0', backgroundColor: selectedCharacter?.id === char.id ? '#E8F4FD' : 'transparent' }}
+                  onPress={() => { setSelectedCharacter(char); setShowCharPicker(false); }}
+                >
+                  <Text style={{ fontSize: 16, fontWeight: '600' }}>{char.name}</Text>
+                  <Text style={{ fontSize: 14, color: '#666', marginTop: 4 }}>{char.description}</Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* 设置弹窗 */}
+      <Modal visible={showSettings} transparent animationType="slide">
+        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' }}>
+          <View style={{ backgroundColor: '#FFF', borderRadius: 16, padding: 24, width: '85%' }}>
+            <Text style={{ fontSize: 18, fontWeight: '600', marginBottom: 16 }}>设置</Text>
+            <Text style={{ fontSize: 14, color: '#666', marginBottom: 8 }}>服务端地址</Text>
+            <TextInput
+              style={{ backgroundColor: '#F5F5F5', borderRadius: 8, padding: 12, fontSize: 14, marginBottom: 16 }}
+              value={serverUrl}
+              onChangeText={setServerUrlState}
+              placeholder="http://localhost:3001"
+            />
+            <View style={{ flexDirection: 'row', justifyContent: 'flex-end' }}>
+              <TouchableOpacity style={{ padding: 12, marginRight: 8 }} onPress={() => setShowSettings(false)}>
+                <Text style={{ color: '#666' }}>取消</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={{ backgroundColor: '#007AFF', padding: 12, borderRadius: 8 }} onPress={handleSaveSettings}>
+                <Text style={{ color: '#FFF' }}>保存</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+    </Screen>
+  );
+}
+</code></pre>
+
+<h3 id="library-screen">3.6 知识库页面 (library/index.tsx)</h3>
+<p class="file-path">client/screens/library/index.tsx</p>
+<pre><code>import React, { useState, useEffect, useCallback } from 'react';
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  FlatList,
+  Alert,
+  ActivityIndicator,
+} from 'react-native';
+import * as DocumentPicker from 'expo-document-picker';
+import { Screen } from '@/components/Screen';
+import { FontAwesome6 } from '@expo/vector-icons';
+import { getAllNovels, saveNovel, deleteNovel } from '@/services/database';
+import { processNovelText } from '@/services/textProcessor';
+import { Novel } from '@/types';
+
+export default function LibraryScreen() {
+  const [novels, setNovels] = useState<Novel[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isUploading, setIsUploading] = useState(false);
+
+  const loadNovels = useCallback(async () => {
+    try {
+      const data = await getAllNovels();
+      setNovels(data.sort((a, b) => b.createdAt - a.createdAt));
+    } catch (error) {
+      console.error('Failed to load novels:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadNovels();
+  }, [loadNovels]);
+
+  const handleUpload = async () => {
+    try {
+      setIsUploading(true);
+      
+      const result = await DocumentPicker.getDocumentAsync({
+        type: 'text/plain',
+        copyToCacheDirectory: true,
+      });
+      
+      if (result.canceled || !result.assets?.[0]) {
+        setIsUploading(false);
+        return;
+      }
+      
+      const file = result.assets[0];
+      const response = await fetch(file.uri);
+      const text = await response.text();
+      
+      const novelId = `novel-${Date.now()}`;
+      const chunks = processNovelText(text, novelId, file.name);
+      
+      const novel: Novel = {
+        id: novelId,
+        title: file.name.replace(/\.txt$/i, ''),
+        content: text,
+        chunks,
+        createdAt: Date.now(),
+      };
+      
+      await saveNovel(novel);
+      await loadNovels();
+      
+      Alert.alert('成功', `已导入《${novel.title}》，共 ${chunks.length} 个段落`);
+    } catch (error) {
+      console.error('Upload error:', error);
+      Alert.alert('错误', '导入失败，请重试');
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  const handleDelete = (novel: Novel) => {
+    Alert.alert(
+      '确认删除',
+      `确定要删除《${novel.title}》吗？`,
+      [
+        { text: '取消', style: 'cancel' },
+        {
+          text: '删除',
+          style: 'destructive',
+          onPress: async () => {
+            await deleteNovel(novel.id);
+            await loadNovels();
+          },
+        },
+      ]
+    );
+  };
+
+  const renderNovel = ({ item }: { item: Novel }) => (
+    <View style={{ backgroundColor: '#FFF', borderRadius: 12, padding: 16, marginHorizontal: 16, marginVertical: 8, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4, elevation: 3 }}>
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+        <View style={{ flex: 1 }}>
+          <Text style={{ fontSize: 16, fontWeight: '600' }}>{item.title}</Text>
+          <Text style={{ fontSize: 13, color: '#666', marginTop: 4 }}>
+            {item.chunks.length} 个段落
+          </Text>
+          <Text style={{ fontSize: 12, color: '#999', marginTop: 2 }}>
+            {new Date(item.createdAt).toLocaleDateString()}
+          </Text>
+        </View>
+        <TouchableOpacity onPress={() => handleDelete(item)} style={{ padding: 8 }}>
+          <FontAwesome6 name="trash" size={18} color="#FF3B30" />
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+
+  return (
+    <Screen>
+      <View style={{ flex: 1 }}>
+        {/* 头部 */}
+        <View style={{ padding: 16, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+          <Text style={{ fontSize: 24, fontWeight: 'bold' }}>知识库</Text>
+          <TouchableOpacity
+            style={{ backgroundColor: '#007AFF', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 20, flexDirection: 'row', alignItems: 'center' }}
+            onPress={handleUpload}
+            disabled={isUploading}
+          >
+            {isUploading ? (
+              <ActivityIndicator color="#FFF" size="small" />
+            ) : (
+              <>
+                <FontAwesome6 name="plus" size={14} color="#FFF" />
+                <Text style={{ color: '#FFF', marginLeft: 6, fontWeight: '600' }}>导入小说</Text>
+              </>
+            )}
+          </TouchableOpacity>
+        </View>
+
+        {/* 列表 */}
+        {isLoading ? (
+          <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+            <ActivityIndicator size="large" color="#007AFF" />
+          </View>
+        ) : (
+          <FlatList
+            data={novels}
+            renderItem={renderNovel}
+            keyExtractor={item => item.id}
+            ListEmptyComponent={
+              <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 40 }}>
+                <FontAwesome6 name="book-open" size={48} color="#CCC" />
+                <Text style={{ marginTop: 16, fontSize: 16, color: '#999' }}>
+                  还没有导入任何小说
+                </Text>
+                <Text style={{ marginTop: 8, fontSize: 14, color: '#BBB', textAlign: 'center' }}>
+                  点击右上角"导入小说"按钮开始
+                </Text>
+              </View>
+            }
+          />
+        )}
+      </View>
+    </Screen>
+  );
+}
+</code></pre>
+
+<h3 id="character-screen">3.7 角色设定页面 (character/index.tsx)</h3>
+<p class="file-path">client/screens/character/index.tsx</p>
+<pre><code>import React, { useState, useEffect, useCallback } from 'react';
+import {
+  View,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  FlatList,
+  Modal,
+  ScrollView,
+  Alert,
+  KeyboardAvoidingView,
+  Platform,
+} from 'react-native';
+import { Screen } from '@/components/Screen';
+import { FontAwesome6 } from '@expo/vector-icons';
+import { getAllCharacters, saveCharacter, deleteCharacter, initDefaultCharacters } from '@/services/database';
+import { Character } from '@/types';
+
+export default function CharacterScreen() {
+  const [characters, setCharacters] = useState<Character[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [showEditor, setShowEditor] = useState(false);
+  const [editingChar, setEditingChar] = useState<Character | null>(null);
+  const [name, setName] = useState('');
+  const [description, setDescription] = useState('');
+  const [systemPrompt, setSystemPrompt] = useState('');
+
+  const loadCharacters = useCallback(async () => {
+    try {
+      await initDefaultCharacters();
+      const data = await getAllCharacters();
+      setCharacters(data.sort((a, b) => b.createdAt - a.createdAt));
+    } catch (error) {
+      console.error('Failed to load characters:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadCharacters();
+  }, [loadCharacters]);
+
+  const handleAdd = () => {
+    setEditingChar(null);
+    setName('');
+    setDescription('');
+    setSystemPrompt('');
+    setShowEditor(true);
+  };
+
+  const handleEdit = (char: Character) => {
+    setEditingChar(char);
+    setName(char.name);
+    setDescription(char.description);
+    setSystemPrompt(char.systemPrompt);
+    setShowEditor(true);
+  };
+
+  const handleSave = async () => {
+    if (!name.trim()) {
+      Alert.alert('错误', '请输入角色名称');
+      return;
+    }
+    if (!systemPrompt.trim()) {
+      Alert.alert('错误', '请输入角色设定');
+      return;
+    }
+
+    const char: Character = {
+      id: editingChar?.id || `char-${Date.now()}`,
+      name: name.trim(),
+      description: description.trim(),
+      systemPrompt: systemPrompt.trim(),
+      createdAt: editingChar?.createdAt || Date.now(),
+    };
+
+    await saveCharacter(char);
+    await loadCharacters();
+    setShowEditor(false);
+  };
+
+  const handleDelete = (char: Character) => {
+    Alert.alert(
+      '确认删除',
+      `确定要删除角色"${char.name}"吗？`,
+      [
+        { text: '取消', style: 'cancel' },
+        {
+          text: '删除',
+          style: 'destructive',
+          onPress: async () => {
+            await deleteCharacter(char.id);
+            await loadCharacters();
+          },
+        },
+      ]
+    );
+  };
+
+  const renderCharacter = ({ item }: { item: Character }) => (
+    <View style={{ backgroundColor: '#FFF', borderRadius: 12, padding: 16, marginHorizontal: 16, marginVertical: 8, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4, elevation: 3 }}>
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+        <View style={{ flex: 1 }}>
+          <Text style={{ fontSize: 18, fontWeight: '600' }}>{item.name}</Text>
+          <Text style={{ fontSize: 14, color: '#666', marginTop: 4 }}>{item.description}</Text>
+          <Text style={{ fontSize: 12, color: '#999', marginTop: 8 }} numberOfLines={2}>
+            {item.systemPrompt}
+          </Text>
+        </View>
+        <View>
+          <TouchableOpacity onPress={() => handleEdit(item)} style={{ padding: 8 }}>
+            <FontAwesome6 name="pen" size={16} color="#007AFF" />
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => handleDelete(item)} style={{ padding: 8, marginTop: 4 }}>
+            <FontAwesome6 name="trash" size={16} color="#FF3B30" />
+          </TouchableOpacity>
+        </View>
+      </View>
+    </View>
+  );
+
+  return (
+    <Screen>
+      <View style={{ flex: 1 }}>
+        {/* 头部 */}
+        <View style={{ padding: 16, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+          <Text style={{ fontSize: 24, fontWeight: 'bold' }}>角色设定</Text>
+          <TouchableOpacity
+            style={{ backgroundColor: '#007AFF', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 20, flexDirection: 'row', alignItems: 'center' }}
+            onPress={handleAdd}
+          >
+            <FontAwesome6 name="plus" size={14} color="#FFF" />
+            <Text style={{ color: '#FFF', marginLeft: 6, fontWeight: '600' }}>新建角色</Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* 列表 */}
+        {isLoading ? (
+          <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+            <ActivityIndicator size="large" color="#007AFF" />
+          </View>
+        ) : (
+          <FlatList
+            data={characters}
+            renderItem={renderCharacter}
+            keyExtractor={item => item.id}
+          />
+        )}
+      </View>
+
+      {/* 编辑弹窗 */}
+      <Modal visible={showEditor} transparent animationType="slide">
+        <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' }}>
+            <View style={{ backgroundColor: '#FFF', borderTopLeftRadius: 20, borderTopRightRadius: 20, maxHeight: '85%' }}>
+              <View style={{ padding: 16, borderBottomWidth: 1, borderBottomColor: '#E5E5E5', flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Text style={{ fontSize: 18, fontWeight: '600' }}>{editingChar ? '编辑角色' : '新建角色'}</Text>
+                <TouchableOpacity onPress={() => setShowEditor(false)}>
+                  <FontAwesome6 name="xmark" size={20} color="#666" />
+                </TouchableOpacity>
+              </View>
+              <ScrollView style={{ padding: 16 }}>
+                <Text style={{ fontSize: 14, color: '#666', marginBottom: 8 }}>角色名称</Text>
+                <TextInput
+                  style={{ backgroundColor: '#F5F5F5', borderRadius: 8, padding: 12, fontSize: 16, marginBottom: 16 }}
+                  value={name}
+                  onChangeText={setName}
+                  placeholder="例如：古风文人"
+                />
+                
+                <Text style={{ fontSize: 14, color: '#666', marginBottom: 8 }}>角色描述</Text>
+                <TextInput
+                  style={{ backgroundColor: '#F5F5F5', borderRadius: 8, padding: 12, fontSize: 16, marginBottom: 16 }}
+                  value={description}
+                  onChangeText={setDescription}
+                  placeholder="例如：温文尔雅，用词古典"
+                  multiline
+                />
+                
+                <Text style={{ fontSize: 14, color: '#666', marginBottom: 8 }}>角色设定 (System Prompt)</Text>
+                <TextInput
+                  style={{ backgroundColor: '#F5F5F5', borderRadius: 8, padding: 12, fontSize: 14, minHeight: 120, textAlignVertical: 'top' }}
+                  value={systemPrompt}
+                  onChangeText={setSystemPrompt}
+                  placeholder="描述这个角色的说话风格、性格特点等..."
+                  multiline
+                />
+              </ScrollView>
+              <View style={{ padding: 16, borderTopWidth: 1, borderTopColor: '#E5E5E5', flexDirection: 'row', justifyContent: 'flex-end' }}>
+                <TouchableOpacity style={{ padding: 12, marginRight: 16 }} onPress={() => setShowEditor(false)}>
+                  <Text style={{ color: '#666' }}>取消</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={{ backgroundColor: '#007AFF', paddingHorizontal: 24, paddingVertical: 12, borderRadius: 8 }} onPress={handleSave}>
+                  <Text style={{ color: '#FFF', fontWeight: '600' }}>保存</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+    </Screen>
+  );
+}
+</code></pre>
+
+<hr>
+
+<h2 id="backend">4. 后端代码</h2>
+
+<h3 id="server">4.1 服务端入口 (server/src/index.js)</h3>
+<p class="file-path">server/src/index.js</p>
+<pre><code>const express = require('express');
+const cors = require('cors');
+const { spawn } = require('child_process');
+
+const app = express();
+const PORT = 3001;
+
+app.use(cors());
+app.use(express.json({ limit: '10mb' }));
+
+// 健康检查
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok' });
+});
+
+// 获取模型列表
+app.get('/api/models', (req, res) => {
+  const { exec } = require('child_process');
+  exec('ollama list', (error, stdout, stderr) => {
+    if (error) {
+      return res.status(500).json({ error: '无法获取模型列表' });
+    }
+    const models = stdout.split('\n')
+      .slice(1)
+      .filter(line => line.trim())
+      .map(line => {
+        const parts = line.split(/\s+/);
+        return { name: parts[0], size: parts[1], modified: parts.slice(2).join(' ') };
+      });
+    res.json({ models });
+  });
+});
+
+// 聊天接口
+app.post('/api/chat', (req, res) => {
+  const { message, systemPrompt, model } = req.body;
+  
+  if (!message) {
+    return res.status(400).json({ error: '消息不能为空' });
+  }
+
+  const modelName = model || 'qwen2.5:3b';
+  let fullPrompt = systemPrompt 
+    ? `[INST] <<SYS>>\n${systemPrompt}\n<</SYS>>\n\n${message} [/INST]`
+    : `[INST] ${message} [/INST]`;
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+
+  const ollama = spawn('ollama', ['run', modelName], { shell: true });
+  ollama.stdin.write(fullPrompt + '\n');
+  ollama.stdin.end();
+
+  ollama.stdout.on('data', (data) => {
+    res.write(`data: ${JSON.stringify({ content: data.toString() })}\n\n`);
+  });
+
+  ollama.on('close', () => {
+    res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
+    res.end();
+  });
+
+  req.on('close', () => ollama.kill());
+});
+
+app.listen(PORT, () => {
+  console.log('========================================');
+  console.log('   AI 小说助手 服务端已启动！');
+  console.log(`   http://localhost:${PORT}`);
+  console.log('========================================');
+});
+</code></pre>
+
+<hr>
+
+<h2 id="config">5. 配置文件</h2>
+
+<h3>package.json</h3>
+<pre><code>{
+  "name": "novel-ai-server",
+  "version": "1.0.0",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5"
+  }
+}
+</code></pre>
+
+<hr>
+
+<h2 id="deploy">6. 部署说明</h2>
+
+<h3>6.1 前端部署</h3>
+<p>前端已部署到 GitHub Pages：</p>
+<p><code>https://georgewhere.github.io/noval-AI-Assistant/</code></p>
+
+<h3>6.2 后端部署</h3>
+<ol>
+<li>安装 Node.js</li>
+<li>安装 Ollama 并下载模型：<code>ollama pull qwen2.5:3b</code></li>
+<li>安装依赖：<code>npm install</code></li>
+<li>启动服务：<code>node src/index.js</code></li>
+</ol>
+
+<h3>6.3 内网穿透</h3>
+<ol>
+<li>注册 ngrok 账号</li>
+<li>配置 authtoken：<code>ngrok config add-authtoken YOUR_TOKEN</code></li>
+<li>启动穿透：<code>ngrok http 3001</code></li>
+<li>复制 ngrok 提供的地址（如 <code>https://xxx.ngrok.io</code>）</li>
+</ol>
+
+<h3>6.4 手机使用</h3>
+<ol>
+<li>用手机浏览器打开前端页面</li>
+<li>点击右上角设置</li>
+<li>输入 ngrok 地址</li>
+<li>开始使用</li>
+</ol>
+
+<hr>
+<p style="text-align: center; color: #999; margin-top: 40px;">
+文档版本：v1.0 | 最后更新：2026-06-19
+</p>
+
+</body>
+</html>
